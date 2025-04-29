@@ -88,6 +88,7 @@ class HTMLTranslationManager:
                 'final_translation': "[TRANSLATION_ERROR]",
                 'analysis': {}
             }
+
 def _merge_translations(self, processed_html, translations):
         soup = BeautifulSoup(processed_html, 'html.parser')
         translation_map = {t['id']: t['final_translation'] for t in translations}
