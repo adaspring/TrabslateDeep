@@ -6,6 +6,7 @@ import os
 import concurrent.futures
 from difflib import SequenceMatcher
 import random
+import time  # Added missing import
 
 # Predefined list of working LibreTranslate servers
 LIBRETRANSLATE_SERVERS = [
@@ -16,6 +17,78 @@ LIBRETRANSLATE_SERVERS = [
     "https://trans.zillyhuhn.com"
 ]
 
+class HTMLTranslationProcessor:
+    def __init__(self):
+        self.translation_data = []
+        self.current_id = 0
+        self.placeholder_template = "<!-- TRANSLATION_ID_{} -->"
+        
+        # Configuration for translatable elements
+        self.translatable_config = {
+            'elements': {
+                'text_content': [
+                    'title', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'a', 
+                    'button', 'span', 'div', 'li', 'td', 'th', 'label', 'address',
+                    'figcaption', 'caption', 'summary', 'blockquote', 'q', 'cite',
+                    'dt', 'dd', 'legend', 'option', 'strong', 'em', 'mark', 'time'
+                ]
+            },
+            'attributes': {
+                'global': ['title', 'alt', 'placeholder']
+            }
+        }
+
+    def extract_translatable(self, html_content):
+        """Simplified extraction method"""
+        soup = BeautifulSoup(html_content, 'html.parser')
+        
+        # Process text content
+        for tag in self.translatable_config['elements']['text_content']:
+            for element in soup.find_all(tag):
+                if element.string and element.string.strip():
+                    self._process_text_node(element)
+        
+        # Process attributes
+        for attr in self.translatable_config['attributes']['global']:
+            for element in soup.find_all(attrs={attr: True}):
+                self._process_attribute(element, attr)
+        
+        return {
+            'processed_html': str(soup),
+            'translation_data': self.translation_data
+        }
+
+    def _process_text_node(self, element):
+        """Handle text content processing"""
+        text = element.string.strip()
+        self._create_placeholder(element, text, 'text')
+
+    def _process_attribute(self, element, attr):
+        """Handle attribute processing"""
+        self._create_placeholder(element, element[attr], 'attribute', attr)
+
+    def _create_placeholder(self, element, content, content_type, attr=None):
+        """Create translation placeholder"""
+        placeholder = self.placeholder_template.format(self.current_id)
+        
+        entry = {
+            'id': self.current_id,
+            'type': content_type,
+            'content': content,
+            'context': {
+                'tag': element.name,
+                'attrs': element.attrs
+            }
+        }
+
+        if content_type == 'attribute':
+            element[attr] = placeholder
+            entry['attribute'] = attr
+        else:
+            element.string.replace_with(placeholder)
+
+        self.translation_data.append(entry)
+        self.current_id += 1
 class TranslationIntegrator:
     def __init__(self, deepl_key, libre_urls, chatgpt_key):
         self.deepl_key = deepl_key
@@ -109,14 +182,13 @@ def _merge_translations(self, processed_html, translations):
                         element[attr] = translation_map[trans_id]
         
         return str(soup)
-
-# Usage Example
+    
 if __name__ == "__main__":
     # Initialize components
     processor = HTMLTranslationProcessor()
     integrator = TranslationIntegrator(
         deepl_key=os.getenv('DEEPL_KEY'),
-        libre_url=os.getenv('LIBRE_URL'),
+        libre_urls=os.getenv('LIBRE_URLS'),  # Fixed parameter name
         chatgpt_key=os.getenv('CHATGPT_KEY')
     )
     
@@ -130,5 +202,3 @@ if __name__ == "__main__":
     )
     
     print(f"Final translated file created: {result_file}")
-
-# Rest of the code remains unchanged
