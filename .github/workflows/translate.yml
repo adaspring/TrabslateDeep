@@ -52,16 +52,12 @@ jobs:
           "${{ inputs.output_file }}" \
           "${{ inputs.target_lang }}"
       env:
-        DEEPL_KEY: ${{ env.DEEPL_KEY }}
-        LIBRE_URLS: ${{ env.LIBRE_URLS }}
-        CHATGPT_KEY: ${{ env.CHATGPT_KEY }}
+        DEEPL_KEY: ${{ secrets.DEEPL_KEY }}
+        LIBRE_URLS: ${{ secrets.LIBRE_URLS }}
+        CHATGPT_KEY: ${{ secrets.CHATGPT_KEY }}
 
     - name: Upload artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4  # Changed from v3 to v4
       with:
         name: translated-file
         path: ${{ inputs.output_file }}
-
-    - name: Cleanup workspace
-      run: |
-        rm -f ${{ inputs.output_file }}
