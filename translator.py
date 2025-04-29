@@ -130,6 +130,5 @@ if __name__ == "__main__":
     )
     
     print(f"Final translated file created: {result_file}")
-```
 
 # Rest of the code remains unchanged
