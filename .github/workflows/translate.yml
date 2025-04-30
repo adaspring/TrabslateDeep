@@ -12,7 +12,6 @@ env:
   PYTHON_VERSION: '3.10'
   TARGET_LANG: ${{ github.event.inputs.target_lang }}
   DEEPL_KEY: ${{ secrets.DEEPL_KEY }}
-  LIBRE_URLS: ${{ secrets.LIBRE_URLS }}
   CHATGPT_KEY: ${{ secrets.CHATGPT_KEY }}
 
 jobs:
@@ -36,9 +35,9 @@ jobs:
         run: |
           python translator_fixed.py
         env:
+          CI: 'true'
           TARGET_LANG: ${{ env.TARGET_LANG }}
           DEEPL_KEY: ${{ env.DEEPL_KEY }}
-          LIBRE_URLS: ${{ env.LIBRE_URLS }}
           CHATGPT_KEY: ${{ env.CHATGPT_KEY }}
 
       - name: Upload translated HTML files
