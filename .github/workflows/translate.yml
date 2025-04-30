@@ -7,20 +7,44 @@ on:
         description: 'Target language code (e.g. fr)'
         required: true
         default: 'fr'
+      force_retry:
+        description: 'Ignore existing translations'
+        required: false
+        type: boolean
+        default: false
 
 env:
   PYTHON_VERSION: '3.10'
+  MAX_RETRY_MINUTES: 10  # Matches script's 10-minute retry window
   DEEPL_KEY: ${{ secrets.DEEPL_KEY }}
   LIBRE_URLS: ${{ secrets.LIBRE_URLS }}
   CHATGPT_KEY: ${{ secrets.CHATGPT_KEY }}
-  EXCLUDED_LANG_SUFFIXES: 'fr,es,de'  # Matches EXCLUDED_LANG_SUFFIXES in Python
 
 jobs:
   translate:
     runs-on: ubuntu-latest
+    timeout-minutes: 30  # Extra time for retries
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Validate HTML files
+      run: |
+        echo "📋 Repository files:"
+        find . -name "*.html" -exec ls -la {} \;
+        echo "🔍 Valid HTML files found:"
+        python -c "
+        from bs4 import BeautifulSoup
+        from pathlib import Path
+        for f in Path('.').rglob('*.html'):
+            try:
+                BeautifulSoup(f.read_text(), 'html.parser')
+                print(f'✓ {f}')
+            except Exception as e:
+                print(f'✗ {f} (Invalid HTML: {str(e)})')
+        "
 
     - name: Set up Python
       uses: actions/setup-python@v4
@@ -33,17 +57,29 @@ jobs:
         pip install -r requirements.txt
         pip install inquirer requests beautifulsoup4
 
-    - name: Run translation
+    - name: Run persistent translation
       run: |
         python translator.py
       env:
+        TARGET_LANG: ${{ inputs.target_lang }}
+        EXCLUDED_LANG_SUFFIXES: ${{ inputs.force_retry && '' || 'fr,es,de' }}
         DEEPL_KEY: ${{ env.DEEPL_KEY }}
         LIBRE_URLS: ${{ env.LIBRE_URLS }}
         CHATGPT_KEY: ${{ env.CHATGPT_KEY }}
-        TARGET_LANG: ${{ inputs.target_lang }}  # Passes to get_target_language()
+        MAX_RETRY_MINUTES: ${{ env.MAX_RETRY_MINUTES }}
 
-    - name: Upload artifacts
+    - name: Upload translated files
       uses: actions/upload-artifact@v4
       with:
-        name: translated-files
-        path: '*-*.html'  # Matches output_file pattern in Python
+        name: translated-files-${{ inputs.target_lang }}
+        path: |
+          ./*-${{ inputs.target_lang }}.html
+          !./original-*.html
+      if: success() || failure()  # Upload even if partial success
+
+    - name: Fail if no translations
+      run: |
+        if [ -z "$(find . -name '*-${{ inputs.target_lang }}.html' -print -quit)" ]; then
+          echo "::error::No files were translated after all retries"
+          exit 1
+        fi
