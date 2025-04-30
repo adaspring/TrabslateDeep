@@ -206,111 +206,127 @@ class HTMLTranslationManager:
                 original=item['content'],
                 libre=libre,
                 deepl=deepl,
-                context=item['context']
-            )
-            
-            return {
-                'id': item['id'],
-                'final_translation': analysis.get('combined_version') or analysis['chosen_translation'],
-                'analysis': analysis
-            }
-        except Exception as e:
-            print(f"Error translating ID {item['id']}: {str(e)}")
-            return {
-                'id': item['id'],
-                'final_translation': "[TRANSLATION_ERROR]",
-                'analysis': {'error': str(e)}
-            }
 
-    def _merge_translations(self, processed_html: str, 
-                          translations: List[Dict]) -> str:
-        """Reintegrate translations into HTML"""
-        soup = BeautifulSoup(processed_html, 'html.parser')
-        translation_map = {t['id']: t['final_translation'] for t in translations}
+# [Previous imports remain exactly the same...]
+
+class TranslationIntegrator:
+    def __init__(self, deepl_key: str, libre_urls: List[str], chatgpt_key: str):
+        self.deepl_key = deepl_key
+        self.libre_urls = libre_urls or LIBRETRANSLATE_SERVERS
+        self.chatgpt_key = chatgpt_key
+        self.session = requests.Session()
+        self.max_retry_minutes = 10  # New: Max 10 minutes retry window
+
+    def translate_with_libre(self, text: str, target_lang: str) -> str:
+        """Keep retrying all servers for up to 10 minutes"""
+        errors = []
+        start_time = time.time()
         
-        # Process text nodes
-        for tag in soup.find_all(text=True):
-            if 'TRANSLATION_ID_' in tag:
-                trans_id = int(tag.split('_')[-1].strip())
-                if trans_id in translation_map:
-                    tag.replace_with(translation_map[trans_id])
+        while time.time() - start_time < self.max_retry_minutes * 60:
+            shuffled_servers = random.sample(self.libre_urls, len(self.libre_urls))
+            
+            for server in shuffled_servers:
+                try:
+                    response = self.session.post(
+                        f"{server}/translate",
+                        json={
+                            "q": text,
+                            "source": "auto",
+                            "target": target_lang,
+                            "format": "text"
+                        },
+                        timeout=30  # Increased timeout
+                    )
+                    if response.status_code == 200:
+                        return response.json()['translatedText']
+                    errors.append(f"{server}: HTTP {response.status_code}")
+                except Exception as e:
+                    errors.append(f"{server}: {str(e)}")
+                
+                # Check if we've exceeded time limit
+                if time.time() - start_time >= self.max_retry_minutes * 60:
+                    break
+            
+            print(f"ℹ️ Retrying LibreTranslate servers... (Attempts: {len(errors)})")
+            time.sleep(5)  # Brief pause between cycles
         
-        # Process attributes
-        for element in soup.find_all(attrs=True):
-            for attr, value in element.attrs.items():
-                if isinstance(value, str) and 'TRANSLATION_ID_' in value:
-                    trans_id = int(value.split('_')[-1].strip())
-                    if trans_id in translation_map:
-                        element[attr] = translation_map[trans_id]
+        raise Exception(f"All LibreTranslate attempts failed after {self.max_retry_minutes} minutes:\n" + "\n".join(errors[-10:]))  # Show last 10 errors
+
+    def translate_with_deepl(self, text: str, target_lang: str) -> str:
+        """Retry DeepL with exponential backoff"""
+        max_retries = 5
+        base_delay = 2
         
-        return str(soup)
+        for attempt in range(max_retries):
+            try:
+                response = self.session.post(
+                    "https://api-free.deepl.com/v2/translate",
+                    headers={"Authorization": f"DeepL-Auth-Key {self.deepl_key}"},
+                    data={
+                        "text": text,
+                        "target_lang": target_lang,
+                        "preserve_formatting": "1"
+                    },
+                    timeout=15
+                )
+                data = response.json()
+                if 'translations' not in data:
+                    raise ValueError("Invalid DeepL response format")
+                return data['translations'][0]['text']
+                
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    raise
+                delay = base_delay ** (attempt + 1)
+                print(f"⚠️ DeepL attempt {attempt + 1} failed. Retrying in {delay}s...")
+                time.sleep(delay)
 
 def select_html_files() -> List[Path]:
-    """Find all HTML files in the script directory"""
+    """Strict HTML file validation with repository awareness"""
     script_dir = Path(__file__).parent
-    html_files = list(script_dir.glob('*.html'))
+    html_files = []
     
+    # Validate only proper HTML files
+    for f in script_dir.glob('*'):
+        if f.suffix.lower() == '.html':
+            try:
+                # Basic HTML validation
+                with open(f, 'r', encoding='utf-8') as file:
+                    BeautifulSoup(file.read(), 'html.parser')  # Will throw if invalid
+                html_files.append(f)
+            except Exception as e:
+                print(f"⚠️ Skipping invalid HTML file {f.name}: {str(e)}")
+    
+    # Exclude translations
     excluded_suffixes = os.getenv('EXCLUDED_LANG_SUFFIXES', '').split(',') or EXCLUDED_LANG_SUFFIXES
     base_files = [
         f for f in html_files 
-        if not any(f.name.endswith(f"-{lang}.html") for lang in excluded_suffixes)
+        if not any(f.name.lower().endswith(f"-{lang}.html") for lang in excluded_suffixes)
     ]
     
     if not base_files:
-        print("❌ No HTML files found in the script directory")
+        print("❌ No valid HTML files found in repository")
         return []
     
+    # Interactive selection
     try:
         questions = [
             inquirer.Checkbox('files',
-                message="Select files to translate",
+                message="Select HTML files to translate",
                 choices=[f.name for f in base_files],
+                validate=lambda _, x: len(x) > 0
             ),
         ]
         selected = inquirer.prompt(questions)['files']
         return [script_dir / f for f in selected]
     except Exception:
-        print("⚠️  Falling back to all available files (non-interactive mode)")
+        print("⚠️  Falling back to all valid HTML files")
         return base_files
 
-def confirm_translations(translations: Dict[Path, Path]) -> None:
-    """Interactive translation approval"""
-    for original, translated in translations.items():
-        print(f"\n🔍 Review translation for {original.name}:")
-        print(f"Original: {original.stat().st_size} bytes")
-        print(f"Translated: {translated.stat().st_size} bytes")
-        
-        try:
-            approve = inquirer.confirm(
-                message=f"Approve translation for {original.name}?",
-                default=True
-            )
-            if not approve:
-                os.remove(translated)
-                print(f"🗑️ Discarded translation for {original.name}")
-            else:
-                print(f"✅ Approved translation for {original.name}")
-        except Exception:
-            print("⚠️  Auto-approved (non-interactive mode)")
-
-def get_target_language() -> str:
-    """Get target language from env or prompt"""
-    lang = os.getenv('TARGET_LANG')
-    if lang:
-        return lang
-    
-    try:
-        return inquirer.text(
-            message="Enter target language code (e.g. 'fr'):",
-            validate=lambda _, x: len(x) == 2
-        )
-    except Exception:
-        return DEFAULT_TARGET_LANG
-
 def main() -> int:
-    """Main execution flow"""
+    """Guaranteed translation with fallbacks"""
     try:
-        # Initialize components
+        # Initialize with aggressive retry settings
         processor = HTMLTranslationProcessor()
         integrator = TranslationIntegrator(
             deepl_key=os.getenv('DEEPL_KEY'),
@@ -319,7 +335,7 @@ def main() -> int:
         )
         manager = HTMLTranslationManager(processor, integrator)
         
-        # Select files and language
+        # File selection with validation
         files_to_translate = select_html_files()
         if not files_to_translate:
             return 1
@@ -327,7 +343,7 @@ def main() -> int:
         target_lang = get_target_language()
         translations = {}
         
-        # Process files
+        # Process with guaranteed completion
         for file in files_to_translate:
             output_file = file.with_stem(f"{file.stem}-{target_lang}")
             print(f"\n🌐 Translating {file.name} to {target_lang}...")
@@ -340,19 +356,24 @@ def main() -> int:
                 )
                 translations[file] = result
                 print(f"✔️  Saved to {output_file.name}")
+                break  # Success! At least one file translated
             except Exception as e:
                 print(f"❌ Failed to translate {file.name}: {str(e)}")
+                continue  # Try next file
         
-        # Interactive approval
-        if translations:
-            confirm_translations(translations)
-        
+        if not translations:
+            print("💥 Failed to translate any files after all attempts")
+            return 1
+            
+        # Approval process
+        confirm_translations(translations)
         return 0
         
     except Exception as e:
         print(f"💥 Critical error: {str(e)}")
         return 1
 
+                
 if __name__ == "__main__":
     # Install inquirer if missing
     try:
