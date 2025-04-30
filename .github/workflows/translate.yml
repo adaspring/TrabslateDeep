@@ -13,6 +13,7 @@ env:
   DEEPL_KEY: ${{ secrets.DEEPL_KEY }}
   LIBRE_URLS: ${{ secrets.LIBRE_URLS }}
   CHATGPT_KEY: ${{ secrets.CHATGPT_KEY }}
+  EXCLUDED_LANG_SUFFIXES: 'fr,es,de'  # Matches EXCLUDED_LANG_SUFFIXES in Python
 
 jobs:
   translate:
@@ -20,8 +21,6 @@ jobs:
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
-      with:
-        fetch-depth: 0  # Get all files
 
     - name: Set up Python
       uses: actions/setup-python@v4
@@ -34,24 +33,17 @@ jobs:
         pip install -r requirements.txt
         pip install inquirer requests beautifulsoup4
 
-    - name: List available HTML files
-      run: |
-        echo "📂 Files in repository:"
-        find . -name "*.html" -not -name "*-*.html" -exec ls -la {} \;
-
-    - name: Run interactive translation
+    - name: Run translation
       run: |
         python translator.py
       env:
         DEEPL_KEY: ${{ env.DEEPL_KEY }}
         LIBRE_URLS: ${{ env.LIBRE_URLS }}
         CHATGPT_KEY: ${{ env.CHATGPT_KEY }}
-      timeout-minutes: 30  # Extended timeout for interactive
+        TARGET_LANG: ${{ inputs.target_lang }}  # Passes to get_target_language()
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
         name: translated-files
-        path: |
-          ./*-*.html
-          !./original-*.html
+        path: '*-*.html'  # Matches output_file pattern in Python
