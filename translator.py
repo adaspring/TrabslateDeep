@@ -339,7 +339,39 @@ def main() -> int:
         files_to_translate = select_html_files()
         if not files_to_translate:
             return 1
+
+     # [Previous code remains unchanged until confirm_translations()...]
+
+def confirm_translations(translations: Dict[Path, Path]) -> None:
+    """Modified for CI compatibility"""
+    ci_mode = os.getenv('CI') == 'true'
+    
+    for original, translated in translations.items():
+        print(f"\n🔍 Translation ready for {original.name}:")
+        print(f"Original size: {original.stat().st_size} bytes")
+        print(f"Translated size: {translated.stat().st_size} bytes")
+        
+        if ci_mode:
+            # Auto-approve in CI with logging
+            print("✅ CI auto-approval - saving translation")
+            continue
             
+        try:
+            if inquirer.confirm("Approve this translation?", default=True):
+                print(f"✅ Approved {original.name}")
+            else:
+                os.remove(translated)
+                print(f"🗑️ Discarded {original.name}")
+        except Exception:
+            print("⚠️  Fallback approval (non-interactive)")
+
+# [All following code remains unchanged...]
+
+
+
+
+
+        
         target_lang = get_target_language()
         translations = {}
         
