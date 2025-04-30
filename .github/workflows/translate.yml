@@ -15,7 +15,7 @@ on:
 
 env:
   PYTHON_VERSION: '3.10'
-  MAX_RETRY_MINUTES: 10  # Matches script's 10-minute retry window
+  MAX_RETRY_MINUTES: 10
   DEEPL_KEY: ${{ secrets.DEEPL_KEY }}
   LIBRE_URLS: ${{ secrets.LIBRE_URLS }}
   CHATGPT_KEY: ${{ secrets.CHATGPT_KEY }}
@@ -23,7 +23,7 @@ env:
 jobs:
   translate:
     runs-on: ubuntu-latest
-    timeout-minutes: 30  # Extra time for retries
+    timeout-minutes: 30
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
@@ -54,8 +54,24 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        pip install inquirer requests beautifulsoup4
+        pip install inquirer beautifulsoup4 requests
+        # Verify critical dependencies
+        python -c "import inquirer, bs4, requests; print('Dependencies verified')"
+        # Check installed versions
+        pip show inquirer beautifulsoup4 requests
+
+    - name: Validate interactive components
+      run: |
+        # Test file detection
+        python -c "
+        from pathlib import Path
+        print('HTML files detected:', [f.name for f in Path('.').glob('*.html')])
+        "
+        # Test CI mode detection
+        python -c "
+        import os
+        print(f'CI Mode: {os.getenv(\"CI\")}')
+        "
 
     - name: Run persistent translation
       run: |
@@ -67,6 +83,7 @@ jobs:
         LIBRE_URLS: ${{ env.LIBRE_URLS }}
         CHATGPT_KEY: ${{ env.CHATGPT_KEY }}
         MAX_RETRY_MINUTES: ${{ env.MAX_RETRY_MINUTES }}
+        CI: "true"  # Force CI mode for consistent behavior
 
     - name: Upload translated files
       uses: actions/upload-artifact@v4
@@ -75,7 +92,7 @@ jobs:
         path: |
           ./*-${{ inputs.target_lang }}.html
           !./original-*.html
-      if: success() || failure()  # Upload even if partial success
+      if: success() || failure()
 
     - name: Fail if no translations
       run: |
