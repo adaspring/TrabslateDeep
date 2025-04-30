@@ -7,6 +7,8 @@ import concurrent.futures
 from difflib import SequenceMatcher
 import random
 import time
+from pathlib import Path
+import inquirer  # Added for interactive selection
 
 # Predefined list of working LibreTranslate servers
 LIBRETRANSLATE_SERVERS = [
@@ -220,6 +222,100 @@ class HTMLTranslationManager:
                         element[attr] = translation_map[trans_id]
         
         return str(soup)
+
+def select_html_files():
+    """Find all HTML files in the same directory as the script"""
+    script_dir = Path(__file__).parent
+    html_files = list(script_dir.glob('*.html'))
+    
+    # Exclude already translated files (ending with -fr.html, -es.html etc.)
+    base_files = [f for f in html_files if not any(
+        f.name.endswith(f"-{lang}.html") for lang in ['fr', 'es', 'de'])]
+    
+    if not base_files:
+        print("❌ No HTML files found in the script directory")
+        return []
+    
+    questions = [
+        inquirer.Checkbox('files',
+            message="Select files to translate",
+            choices=[f.name for f in base_files],
+        ),
+    ]
+    
+    selected = inquirer.prompt(questions)['files']
+    return [script_dir / f for f in selected]
+
+def confirm_translations(translations):
+    """Ask for confirmation before saving each translation"""
+    for original, translated in translations.items():
+        print(f"\n🔍 Review translation for {original.name}:")
+        print(f"Original size: {os.path.getsize(original)} bytes")
+        print(f"Translated size: {os.path.getsize(translated)} bytes")
+        
+        questions = [
+            inquirer.Confirm('approve',
+                message=f"Approve translation for {original.name}?",
+                default=True,
+            ),
+        ]
+        
+        if not inquirer.prompt(questions)['approve']:
+            os.remove(translated)
+            print(f"🗑️ Discarded translation for {original.name}")
+        else:
+            print(f"✅ Approved translation for {original.name}")
+
+def main():
+    try:
+        # Find HTML files interactively
+        files_to_translate = select_html_files()
+        if not files_to_translate:
+            return
+        
+        # Initialize translator
+        processor = HTMLTranslationProcessor()
+        integrator = TranslationIntegrator(
+            deepl_key=os.getenv('DEEPL_KEY'),
+            libre_urls=os.getenv('LIBRE_URLS', '').split(',') if os.getenv('LIBRE_URLS') else None,
+            chatgpt_key=os.getenv('CHATGPT_KEY')
+        )
+        manager = HTMLTranslationManager(processor, integrator)
+        
+        # Process files
+        translations = {}
+        for file in files_to_translate:
+            target_lang = 'fr'  # Or make this configurable
+            output_file = file.with_stem(f"{file.stem}-{target_lang}")
+            
+            print(f"\n🌐 Translating {file.name} to {target_lang}...")
+            result = manager.process_file(
+                html_file=str(file),
+                target_lang=target_lang,
+                output_file=str(output_file)
+            )
+            translations[file] = output_file
+        
+        # Interactive approval
+        confirm_translations(translations)
+        
+    except Exception as e:
+        print(f"❌ Error: {str(e)}")
+        return 1
+
+if __name__ == "__main__":
+    # Install inquirer if missing
+    try:
+        import inquirer
+    except ImportError:
+        import subprocess
+        subprocess.run(['pip', 'install', 'inquirer'], check=True)
+        import inquirer
+    
+    sys.exit(main())
+
+
+
 
 if __name__ == "__main__":
     processor = HTMLTranslationProcessor()
