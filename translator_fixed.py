@@ -83,9 +83,9 @@ class HTMLTranslationProcessor:
 
 
 class TranslationIntegrator:
-    def __init__(self, deepl_key: str, libre_urls: List[str], chatgpt_key: str):
+    def __init__(self, deepl_key: str, chatgpt_key: str):
         self.deepl_key = deepl_key
-        self.libre_urls = libre_urls or LIBRETRANSLATE_SERVERS
+        self.libre_urls = LIBRETRANSLATE_SERVERS
         self.chatgpt_key = chatgpt_key
         self.session = requests.Session()
         self.max_retry_minutes = 10
@@ -208,7 +208,7 @@ def select_html_files() -> List[Path]:
             except Exception as e:
                 print(f"Skipping invalid HTML file {f.name}: {str(e)}")
 
-    excluded_suffixes = os.getenv('EXCLUDED_LANG_SUFFIXES', '').split(',') or EXCLUDED_LANG_SUFFIXES
+    excluded_suffixes = EXCLUDED_LANG_SUFFIXES
     base_files = [
         f for f in html_files 
         if not any(f.name.lower().endswith(f"-{lang}.html") for lang in excluded_suffixes)
@@ -217,21 +217,12 @@ def select_html_files() -> List[Path]:
     if not base_files:
         print("No valid HTML files found in repository")
         return []
-
-    try:
-        questions = [
-            inquirer.Checkbox(
-                'files',
-                message="Select HTML files to translate",
-                choices=[f.name for f in base_files],
-                validate=lambda _, x: len(x) > 0
-            ),
-        ]
-        selected = inquirer.prompt(questions)['files']
-        return [script_dir / f for f in selected]
-    except Exception:
-        print("Falling back to all valid HTML files")
-        return base_files
+    
+    print(f"Found {len(base_files)} HTML files to translate:")
+    for f in base_files:
+        print(f"- {f.name}")
+        
+    return base_files
 
 
 def confirm_translations(translations: Dict[Path, Path]) -> None:
@@ -242,15 +233,8 @@ def confirm_translations(translations: Dict[Path, Path]) -> None:
         print(f"Translated size: {translated.stat().st_size} bytes")
         if ci_mode:
             print("CI auto-approval - saving translation")
-            continue
-        try:
-            if inquirer.confirm("Approve this translation?", default=True):
-                print(f"Approved {original.name}")
-            else:
-                os.remove(translated)
-                print(f"Discarded {original.name}")
-        except Exception:
-            print("Fallback approval (non-interactive)")
+        else:
+            print(f"Translation saved for {original.name}")
 
 
 def main() -> int:
@@ -258,7 +242,6 @@ def main() -> int:
         processor = HTMLTranslationProcessor()
         integrator = TranslationIntegrator(
             deepl_key=os.getenv('DEEPL_KEY'),
-            libre_urls=os.getenv('LIBRE_URLS', '').split(',') if os.getenv('LIBRE_URLS') else None,
             chatgpt_key=os.getenv('CHATGPT_KEY')
         )
         manager = HTMLTranslationManager(processor, integrator)
@@ -267,6 +250,8 @@ def main() -> int:
             return 1
 
         target_lang = os.getenv('TARGET_LANG', DEFAULT_TARGET_LANG)
+        print(f"Using target language: {target_lang}")
+        
         translations = {}
         for file in files_to_translate:
             output_file = file.with_stem(f"{file.stem}-{target_lang}")
@@ -295,10 +280,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    try:
-        import inquirer
-    except ImportError:
-        import subprocess
-        subprocess.run([sys.executable, '-m', 'pip', 'install', 'inquirer'], check=True)
-        import inquirer
     sys.exit(main())
