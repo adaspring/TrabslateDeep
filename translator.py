@@ -205,7 +205,7 @@ class HTMLTranslationManager:
             analysis = self.integrator.resolve_with_chatgpt(
                 original=item['content'],
                 libre=libre,
-                deepl=deepl,
+                deepl=deepl,)
 
 # [Previous imports remain exactly the same...]
 
