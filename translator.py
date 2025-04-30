@@ -4,13 +4,16 @@ from bs4 import BeautifulSoup
 import hashlib
 import os
 import concurrent.futures
-from difflib import SequenceMatcher
 import random
 import time
+import sys
 from pathlib import Path
-import inquirer  # Added for interactive selection
+from typing import Dict, List, Optional, Tuple
+import inquirer
 
-# Predefined list of working LibreTranslate servers
+# Configuration
+DEFAULT_TARGET_LANG = 'fr'
+EXCLUDED_LANG_SUFFIXES = ['fr', 'es', 'de']  # Can be overridden via env var
 LIBRETRANSLATE_SERVERS = [
     "https://translate.argosopentech.com",
     "https://libretranslate.de",
@@ -39,7 +42,7 @@ class HTMLTranslationProcessor:
             }
         }
 
-    def extract_translatable(self, html_content):
+    def extract_translatable(self, html_content: str) -> Dict:
         soup = BeautifulSoup(html_content, 'html.parser')
         
         for tag in self.translatable_config['elements']['text_content']:
@@ -56,14 +59,15 @@ class HTMLTranslationProcessor:
             'translation_data': self.translation_data
         }
 
-    def _process_text_node(self, element):
+    def _process_text_node(self, element: BeautifulSoup) -> None:
         text = element.string.strip()
         self._create_placeholder(element, text, 'text')
 
-    def _process_attribute(self, element, attr):
+    def _process_attribute(self, element: BeautifulSoup, attr: str) -> None:
         self._create_placeholder(element, element[attr], 'attribute', attr)
 
-    def _create_placeholder(self, element, content, content_type, attr=None):
+    def _create_placeholder(self, element: BeautifulSoup, content: str, 
+                          content_type: str, attr: Optional[str] = None) -> None:
         placeholder = self.placeholder_template.format(self.current_id)
         
         entry = {
@@ -86,13 +90,13 @@ class HTMLTranslationProcessor:
         self.current_id += 1
 
 class TranslationIntegrator:
-    def __init__(self, deepl_key, libre_urls, chatgpt_key):
+    def __init__(self, deepl_key: str, libre_urls: List[str], chatgpt_key: str):
         self.deepl_key = deepl_key
         self.libre_urls = libre_urls or LIBRETRANSLATE_SERVERS
         self.chatgpt_key = chatgpt_key
         self.session = requests.Session()
 
-    def translate_with_libre(self, text, target_lang):
+    def translate_with_libre(self, text: str, target_lang: str) -> str:
         errors = []
         shuffled_servers = random.sample(self.libre_urls, len(self.libre_urls))
         
@@ -110,14 +114,13 @@ class TranslationIntegrator:
                 )
                 if response.status_code == 200:
                     return response.json()['translatedText']
-                else:
-                    errors.append(f"{server}: {response.status_code}")
+                errors.append(f"{server}: {response.status_code}")
             except Exception as e:
                 errors.append(f"{server}: {str(e)}")
         
         raise Exception(f"All LibreTranslate servers failed: {', '.join(errors)}")
 
-    def translate_with_deepl(self, text, target_lang):
+    def translate_with_deepl(self, text: str, target_lang: str) -> str:
         response = self.session.post(
             "https://api-free.deepl.com/v2/translate",
             headers={"Authorization": f"DeepL-Auth-Key {self.deepl_key}"},
@@ -127,9 +130,13 @@ class TranslationIntegrator:
                 "preserve_formatting": "1"
             }
         )
-        return response.json()['translations'][0]['text']
+        data = response.json()
+        if 'translations' not in data or not data['translations']:
+            raise ValueError("Invalid DeepL response format")
+        return data['translations'][0]['text']
 
-    def resolve_with_chatgpt(self, original, libre, deepl, context):
+    def resolve_with_chatgpt(self, original: str, libre: str, 
+                           deepl: str, context: Dict) -> Dict:
         prompt = f"""Compare translations:
         Original: {original}
         Libre: {libre}
@@ -142,44 +149,55 @@ class TranslationIntegrator:
             json={
                 "model": "gpt-4",
                 "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.2
+                "temperature": 0.2,
+                "response_format": {"type": "json_object"}
             }
         )
-        return response.json()
+        data = response.json()
+        if 'choices' not in data or not data['choices']:
+            raise ValueError("Invalid ChatGPT response format")
+        return json.loads(data['choices'][0]['message']['content'])
 
 class HTMLTranslationManager:
-    def __init__(self, processor, integrator):
+    def __init__(self, processor: HTMLTranslationProcessor, 
+                integrator: TranslationIntegrator):
         self.processor = processor
         self.integrator = integrator
 
-    def process_file(self, html_file, target_lang, output_file):
+    def process_file(self, html_file: Path, target_lang: str, 
+                   output_file: Path) -> Path:
+        """Process a single HTML file through translation pipeline"""
+        if not html_file.exists():
+            raise FileNotFoundError(f"Input file not found: {html_file}")
+        
         with open(html_file, 'r', encoding='utf-8') as f:
             html_content = f.read()
         
         extraction_result = self.processor.extract_translatable(html_content)
         
         with concurrent.futures.ThreadPoolExecutor() as executor:
-            futures = []
-            for item in extraction_result['translation_data']:
-                futures.append(executor.submit(
-                    self._translate_item,
-                    item,
-                    target_lang
-                ))
-            
-            results = [future.result() for future in concurrent.futures.as_completed(futures)]
+            futures = [
+                executor.submit(self._translate_item, item, target_lang)
+                for item in extraction_result['translation_data']
+            ]
+            results = [
+                f.result() 
+                for f in concurrent.futures.as_completed(futures)
+            ]
 
         merged_html = self._merge_translations(
             extraction_result['processed_html'],
             results
         )
         
+        output_file.parent.mkdir(parents=True, exist_ok=True)
         with open(output_file, 'w', encoding='utf-8') as f:
             f.write(merged_html)
         
         return output_file
 
-    def _translate_item(self, item, target_lang):
+    def _translate_item(self, item: Dict, target_lang: str) -> Dict:
+        """Handle translation of a single text segment"""
         try:
             libre = self.integrator.translate_with_libre(item['content'], target_lang)
             deepl = self.integrator.translate_with_deepl(item['content'], target_lang)
@@ -193,7 +211,7 @@ class HTMLTranslationManager:
             
             return {
                 'id': item['id'],
-                'final_translation': analysis.get('combined_version', analysis['chosen_translation']),
+                'final_translation': analysis.get('combined_version') or analysis['chosen_translation'],
                 'analysis': analysis
             }
         except Exception as e:
@@ -201,106 +219,138 @@ class HTMLTranslationManager:
             return {
                 'id': item['id'],
                 'final_translation': "[TRANSLATION_ERROR]",
-                'analysis': {}
+                'analysis': {'error': str(e)}
             }
 
-    def _merge_translations(self, processed_html, translations):
+    def _merge_translations(self, processed_html: str, 
+                          translations: List[Dict]) -> str:
+        """Reintegrate translations into HTML"""
         soup = BeautifulSoup(processed_html, 'html.parser')
         translation_map = {t['id']: t['final_translation'] for t in translations}
         
+        # Process text nodes
         for tag in soup.find_all(text=True):
             if 'TRANSLATION_ID_' in tag:
                 trans_id = int(tag.split('_')[-1].strip())
                 if trans_id in translation_map:
                     tag.replace_with(translation_map[trans_id])
         
+        # Process attributes
         for element in soup.find_all(attrs=True):
-            for attr in element.attrs:
-                if isinstance(element[attr], str) and 'TRANSLATION_ID_' in element[attr]:
-                    trans_id = int(element[attr].split('_')[-1].strip())
+            for attr, value in element.attrs.items():
+                if isinstance(value, str) and 'TRANSLATION_ID_' in value:
+                    trans_id = int(value.split('_')[-1].strip())
                     if trans_id in translation_map:
                         element[attr] = translation_map[trans_id]
         
         return str(soup)
 
-def select_html_files():
-    """Find all HTML files in the same directory as the script"""
+def select_html_files() -> List[Path]:
+    """Find all HTML files in the script directory"""
     script_dir = Path(__file__).parent
     html_files = list(script_dir.glob('*.html'))
     
-    # Exclude already translated files (ending with -fr.html, -es.html etc.)
-    base_files = [f for f in html_files if not any(
-        f.name.endswith(f"-{lang}.html") for lang in ['fr', 'es', 'de'])]
+    excluded_suffixes = os.getenv('EXCLUDED_LANG_SUFFIXES', '').split(',') or EXCLUDED_LANG_SUFFIXES
+    base_files = [
+        f for f in html_files 
+        if not any(f.name.endswith(f"-{lang}.html") for lang in excluded_suffixes
+    ]
     
     if not base_files:
         print("❌ No HTML files found in the script directory")
         return []
     
-    questions = [
-        inquirer.Checkbox('files',
-            message="Select files to translate",
-            choices=[f.name for f in base_files],
-        ),
-    ]
-    
-    selected = inquirer.prompt(questions)['files']
-    return [script_dir / f for f in selected]
-
-def confirm_translations(translations):
-    """Ask for confirmation before saving each translation"""
-    for original, translated in translations.items():
-        print(f"\n🔍 Review translation for {original.name}:")
-        print(f"Original size: {os.path.getsize(original)} bytes")
-        print(f"Translated size: {os.path.getsize(translated)} bytes")
-        
+    try:
         questions = [
-            inquirer.Confirm('approve',
-                message=f"Approve translation for {original.name}?",
-                default=True,
+            inquirer.Checkbox('files',
+                message="Select files to translate",
+                choices=[f.name for f in base_files],
             ),
         ]
-        
-        if not inquirer.prompt(questions)['approve']:
-            os.remove(translated)
-            print(f"🗑️ Discarded translation for {original.name}")
-        else:
-            print(f"✅ Approved translation for {original.name}")
+        selected = inquirer.prompt(questions)['files']
+        return [script_dir / f for f in selected]
+    except Exception:
+        print("⚠️  Falling back to all available files (non-interactive mode)")
+        return base_files
 
-def main():
-    try:
-        # Find HTML files interactively
-        files_to_translate = select_html_files()
-        if not files_to_translate:
-            return
+def confirm_translations(translations: Dict[Path, Path]) -> None:
+    """Interactive translation approval"""
+    for original, translated in translations.items():
+        print(f"\n🔍 Review translation for {original.name}:")
+        print(f"Original: {original.stat().st_size} bytes")
+        print(f"Translated: {translated.stat().st_size} bytes")
         
-        # Initialize translator
+        try:
+            approve = inquirer.confirm(
+                message=f"Approve translation for {original.name}?",
+                default=True
+            )
+            if not approve:
+                os.remove(translated)
+                print(f"🗑️ Discarded translation for {original.name}")
+            else:
+                print(f"✅ Approved translation for {original.name}")
+        except Exception:
+            print("⚠️  Auto-approved (non-interactive mode)")
+
+def get_target_language() -> str:
+    """Get target language from env or prompt"""
+    lang = os.getenv('TARGET_LANG')
+    if lang:
+        return lang
+    
+    try:
+        return inquirer.text(
+            message="Enter target language code (e.g. 'fr'):",
+            validate=lambda _, x: len(x) == 2
+        )
+    except Exception:
+        return DEFAULT_TARGET_LANG
+
+def main() -> int:
+    """Main execution flow"""
+    try:
+        # Initialize components
         processor = HTMLTranslationProcessor()
         integrator = TranslationIntegrator(
             deepl_key=os.getenv('DEEPL_KEY'),
-            libre_urls=os.getenv('LIBRE_URLS', '').split(',') if os.getenv('LIBRE_URLS') else None,
+            libre_urls=os.getenv('LIBRE_URLS', '').split(','),
             chatgpt_key=os.getenv('CHATGPT_KEY')
         )
         manager = HTMLTranslationManager(processor, integrator)
         
-        # Process files
-        translations = {}
-        for file in files_to_translate:
-            target_lang = 'fr'  # Or make this configurable
-            output_file = file.with_stem(f"{file.stem}-{target_lang}")
+        # Select files and language
+        files_to_translate = select_html_files()
+        if not files_to_translate:
+            return 1
             
+        target_lang = get_target_language()
+        translations = {}
+        
+        # Process files
+        for file in files_to_translate:
+            output_file = file.with_stem(f"{file.stem}-{target_lang}")
             print(f"\n🌐 Translating {file.name} to {target_lang}...")
-            result = manager.process_file(
-                html_file=str(file),
-                target_lang=target_lang,
-                output_file=str(output_file)
-            )
-            translations[file] = output_file
+            
+            try:
+                result = manager.process_file(
+                    html_file=file,
+                    target_lang=target_lang,
+                    output_file=output_file
+                )
+                translations[file] = result
+                print(f"✔️  Saved to {output_file.name}")
+            except Exception as e:
+                print(f"❌ Failed to translate {file.name}: {str(e)}")
         
         # Interactive approval
-        confirm_translations(translations)
+        if translations:
+            confirm_translations(translations)
+        
+        return 0
         
     except Exception as e:
-        print(f"❌ Error: {str(e)}")
+        print(f"💥 Critical error: {str(e)}")
         return 1
 
 if __name__ == "__main__":
@@ -309,28 +359,7 @@ if __name__ == "__main__":
         import inquirer
     except ImportError:
         import subprocess
-        subprocess.run(['pip', 'install', 'inquirer'], check=True)
+        subprocess.run([sys.executable, '-m', 'pip', 'install', 'inquirer'], check=True)
         import inquirer
     
     sys.exit(main())
-
-
-
-
-if __name__ == "__main__":
-    processor = HTMLTranslationProcessor()
-    integrator = TranslationIntegrator(
-        deepl_key=os.getenv('DEEPL_KEY'),
-        libre_urls=os.getenv('LIBRE_URLS'),
-        chatgpt_key=os.getenv('CHATGPT_KEY')
-    )
-    
-    manager = HTMLTranslationManager(processor, integrator)
-    
-    result_file = manager.process_file(
-        html_file='input.html',
-        target_lang='fr',
-        output_file='name-fr.html'
-    )
-    
-    print(f"Final translated file created: {result_file}")
