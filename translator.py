@@ -253,7 +253,7 @@ def select_html_files() -> List[Path]:
     excluded_suffixes = os.getenv('EXCLUDED_LANG_SUFFIXES', '').split(',') or EXCLUDED_LANG_SUFFIXES
     base_files = [
         f for f in html_files 
-        if not any(f.name.endswith(f"-{lang}.html") for lang in excluded_suffixes
+        if not any(f.name.endswith(f"-{lang}.html") for lang in excluded_suffixes)
     ]
     
     if not base_files:
